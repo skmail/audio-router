@@ -20,7 +20,7 @@ struct Signature {
 }
 struct Active {
     signature: Signature,
-    _route: Route,
+    route: Route,
 }
 
 #[derive(Default)]
@@ -29,6 +29,7 @@ pub struct State {
     pub apps: Vec<App>,
     pub assignments: BTreeMap<String, Assignment>,
     active: HashMap<String, Active>,
+    volumes: BTreeMap<String, u8>,
     failed: HashMap<String, Signature>,
     pub errors: HashMap<String, String>,
     pub discovery_error: Option<String>,
@@ -49,7 +50,35 @@ impl State {
                 }
             }
         }
+        if let Some(json) = NSUserDefaults::standardUserDefaults()
+            .stringForKey(&NSString::from_str("output-volumes.v1"))
+            && let Ok(volumes) = serde_json::from_str::<BTreeMap<String, u8>>(&json.to_string())
+        {
+            state.volumes = volumes
+                .into_iter()
+                .map(|(uid, value)| (uid, value.min(100)))
+                .collect();
+        }
         state
+    }
+    pub fn volume(&self, uid: &str) -> u8 {
+        self.volumes.get(uid).copied().unwrap_or(100)
+    }
+    pub fn set_volume(&mut self, uid: &str, volume: u8) {
+        let volume = volume.min(100);
+        self.volumes.insert(uid.to_owned(), volume);
+        for active in self.active.values() {
+            if active.signature.device.uid == uid {
+                active.route.set_volume(volume);
+            }
+        }
+        let json = serde_json::to_string(&self.volumes).expect("volume map is serializable");
+        unsafe {
+            NSUserDefaults::standardUserDefaults().setObject_forKey(
+                Some(&NSString::from_str(&json)),
+                &NSString::from_str("output-volumes.v1"),
+            );
+        }
     }
     pub fn save(&self) {
         let json = serde_json::to_string(&self.assignments).expect("string map is serializable");
@@ -110,15 +139,13 @@ impl State {
             if self.active.contains_key(&key) || self.failed.get(&key) == Some(&signature) {
                 continue;
             }
-            match Route::start(&signature.processes, &signature.device) {
+            match Route::start(
+                &signature.processes,
+                &signature.device,
+                self.volume(&signature.device.uid),
+            ) {
                 Ok(route) => {
-                    self.active.insert(
-                        key,
-                        Active {
-                            signature,
-                            _route: route,
-                        },
-                    );
+                    self.active.insert(key, Active { signature, route });
                 }
                 Err(error) => {
                     self.errors.insert(key.clone(), error);

@@ -3,7 +3,11 @@ use objc2_core_audio::*;
 use objc2_core_audio_types::*;
 use objc2_core_foundation::{CFDictionary, CFString};
 use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSObject, NSString, NSUUID};
-use std::{ffi::c_void, ptr::NonNull};
+use std::{
+    ffi::c_void,
+    ptr::NonNull,
+    sync::atomic::{AtomicU32, Ordering},
+};
 
 pub type Result<T> = std::result::Result<T, String>;
 
@@ -177,10 +181,18 @@ pub struct Route {
 
 struct Context {
     tap_start_channel: usize,
+    gain: AtomicU32,
 }
 
 impl Route {
-    pub fn start(processes: &[u32], device: &Device) -> Result<Self> {
+    pub fn set_volume(&self, volume: u8) {
+        self.context.gain.store(
+            (f32::from(volume.min(100)) / 100.0).to_bits(),
+            Ordering::Relaxed,
+        );
+    }
+
+    pub fn start(processes: &[u32], device: &Device, volume: u8) -> Result<Self> {
         if processes.is_empty() {
             return Err("The app has no audio processes yet".into());
         }
@@ -190,6 +202,7 @@ impl Route {
             io: None,
             context: Box::new(Context {
                 tap_start_channel: 0,
+                gain: AtomicU32::new((f32::from(volume.min(100)) / 100.0).to_bits()),
             }),
         };
         unsafe {
@@ -326,6 +339,7 @@ unsafe extern "C-unwind" fn render(
             inputs,
             outputs,
             (*context.cast::<Context>()).tap_start_channel,
+            f32::from_bits((*context.cast::<Context>()).gain.load(Ordering::Relaxed)),
         );
     }
     0
@@ -333,7 +347,7 @@ unsafe extern "C-unwind" fn render(
 
 // Handles interleaved and planar stereo, averages stereo for mono outputs, and
 // leaves extra surround channels silent. All frame counts are bounded by buffers.
-unsafe fn copy_audio(inputs: &[AudioBuffer], outputs: &mut [AudioBuffer], start: usize) {
+unsafe fn copy_audio(inputs: &[AudioBuffer], outputs: &mut [AudioBuffer], start: usize, gain: f32) {
     unsafe {
         let total_output: usize = outputs.iter().map(|b| b.mNumberChannels as usize).sum();
         let mut output_channel = 0;
@@ -356,7 +370,7 @@ unsafe fn copy_audio(inputs: &[AudioBuffer], outputs: &mut [AudioBuffer], start:
                     } else {
                         sample(inputs, start + destination, frame)
                     };
-                    *out.mData.cast::<f32>().add(frame * channels + channel) = value;
+                    *out.mData.cast::<f32>().add(frame * channels + channel) = value * gain;
                 }
             }
             output_channel += channels;
@@ -400,6 +414,7 @@ mod tests {
                 &[buffer(&mut mic, 1), buffer(&mut tap, 2)],
                 &mut [buffer(&mut left, 1), buffer(&mut right, 1)],
                 1,
+                1.0,
             );
         }
         assert_eq!(left, [0.1, 0.3, 0.]);
@@ -415,6 +430,7 @@ mod tests {
                 &[buffer(&mut left, 1), buffer(&mut right, 1)],
                 &mut [buffer(&mut mono, 1)],
                 0,
+                1.0,
             );
         }
         assert_eq!(mono, [0.3, 0.6]);
@@ -424,10 +440,34 @@ mod tests {
                 &[buffer(&mut left, 1), buffer(&mut right, 1)],
                 &mut [buffer(&mut surround, 4)],
                 0,
+                1.0,
             );
         }
         assert_eq!(surround, [0.2, 0.4, 0., 0., 0.4, 0.8, 0., 0.]);
     }
+    #[test]
+    fn volume_attenuates_stereo_and_mutes_mono() {
+        let mut input = [0.8, -0.4, -0.2, 0.6];
+        let mut stereo = [9.; 4];
+        let mut mono = [9.; 2];
+        unsafe {
+            copy_audio(
+                &[buffer(&mut input, 2)],
+                &mut [buffer(&mut stereo, 2)],
+                0,
+                0.5,
+            );
+            copy_audio(
+                &[buffer(&mut input, 2)],
+                &mut [buffer(&mut mono, 1)],
+                0,
+                0.0,
+            );
+        }
+        assert_eq!(stereo, [0.4, -0.2, -0.1, 0.3]);
+        assert_eq!(mono, [0.; 2]);
+    }
+
     #[test]
     fn disabled_input_is_silent() {
         let input = AudioBuffer {
@@ -437,7 +477,7 @@ mod tests {
         };
         let mut output = [9.; 4];
         unsafe {
-            copy_audio(&[input], &mut [buffer(&mut output, 2)], 0);
+            copy_audio(&[input], &mut [buffer(&mut output, 2)], 0, 1.0);
         }
         assert_eq!(output, [0.; 4]);
     }

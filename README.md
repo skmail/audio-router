@@ -31,6 +31,8 @@ The app icon appears in your menu bar. There is no main window or Dock icon.
 
 A checkmark means the app is assigned to that output. Click it again to remove the assignment. Select it under another output to move it there.
 
+Use **Routed volume** at the top of each output’s submenu to adjust all apps assigned to it from 0% (mute) to 100%. Levels are saved per output and apply when it reconnects. This controls only audio routed by Audio Router; the macOS device volume still applies, and pausing or removing a route restores normal playback volume.
+
 Your choices are saved. Chrome and Brave each appear as one app, including their helper processes. All tabs in the same browser use the same output.
 
 **Options** contains pause, retry, and reset controls. Quitting Audio Router restores normal playback.

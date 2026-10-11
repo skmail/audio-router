@@ -5,8 +5,8 @@ use objc2::{
 };
 use objc2_app_kit::*;
 use objc2_foundation::{
-    MainThreadMarker, NSData, NSNotification, NSObject, NSObjectProtocol, NSSize, NSString,
-    NSTimer, NSURL,
+    MainThreadMarker, NSData, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize,
+    NSString, NSTimer, NSURL,
 };
 use std::cell::{OnceCell, RefCell};
 
@@ -27,6 +27,7 @@ pub struct Ivars {
     timer: OnceCell<Retained<NSTimer>>,
     state: RefCell<State>,
     actions: RefCell<Vec<Action>>,
+    volume_controls: RefCell<Vec<(String, Retained<NSTextField>)>>,
 }
 
 define_class!(
@@ -67,6 +68,14 @@ define_class!(
         }
     }
     impl Delegate {
+        #[unsafe(method(changeVolume:))]
+        fn change_volume(&self, slider: &NSSlider) {
+            let controls = self.ivars().volume_controls.borrow();
+            let Some((uid, label)) = controls.get(slider.tag() as usize) else { return; };
+            let volume = slider.doubleValue().round() as u8;
+            self.ivars().state.borrow_mut().set_volume(uid, volume);
+            label.setStringValue(&NSString::from_str(&format!("Routed volume: {volume}%")));
+        }
         #[unsafe(method(tick:))]
         fn tick(&self, _: &NSTimer) { self.ivars().state.borrow_mut().refresh(); }
         #[unsafe(method(perform:))]
@@ -126,11 +135,52 @@ impl Delegate {
     fn separator(&self, menu: &NSMenu) {
         menu.addItem(&NSMenuItem::separatorItem(self.mtm()));
     }
+    fn volume_control(&self, menu: &NSMenu, uid: &str, volume: u8) {
+        let view = NSView::initWithFrame(
+            NSView::alloc(self.mtm()),
+            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(240.0, 58.0)),
+        );
+        let label = NSTextField::labelWithString(
+            &NSString::from_str(&format!("Routed volume: {volume}%")),
+            self.mtm(),
+        );
+        label.setFrame(NSRect::new(
+            NSPoint::new(16.0, 32.0),
+            NSSize::new(208.0, 20.0),
+        ));
+        let slider = unsafe {
+            NSSlider::sliderWithValue_minValue_maxValue_target_action(
+                f64::from(volume),
+                0.0,
+                100.0,
+                Some(self),
+                Some(sel!(changeVolume:)),
+                self.mtm(),
+            )
+        };
+        slider.setFrame(NSRect::new(
+            NSPoint::new(16.0, 6.0),
+            NSSize::new(208.0, 24.0),
+        ));
+        slider.setContinuous(true);
+        slider.setToolTip(Some(&NSString::from_str(
+            "Volume for apps routed to this output. 0% mutes routed audio.",
+        )));
+        let mut controls = self.ivars().volume_controls.borrow_mut();
+        slider.setTag(controls.len() as isize);
+        view.addSubview(&label);
+        view.addSubview(&slider);
+        controls.push((uid.to_owned(), label));
+        let item = self.item(menu, "Routed volume", None, false);
+        item.setEnabled(true);
+        item.setView(Some(&view));
+    }
     fn rebuild(&self) {
         let Some(menu) = self.ivars().menu.get() else {
             return;
         };
         menu.removeAllItems();
+        self.ivars().volume_controls.borrow_mut().clear();
         self.ivars().actions.borrow_mut().clear();
         let state = self.ivars().state.borrow();
         // Keep the main menu focused on destinations; maintenance lives in Options.
@@ -152,6 +202,8 @@ impl Delegate {
             parent.setEnabled(true);
             let submenu = NSMenu::new(self.mtm());
             submenu.setAutoenablesItems(false);
+            self.volume_control(&submenu, &device.uid, state.volume(&device.uid));
+            self.separator(&submenu);
             if entries.is_empty() {
                 self.item(&submenu, "Play audio in an app to add it here", None, false);
             }
