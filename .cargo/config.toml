@@ -1,0 +1,5 @@
+[env]
+MACOSX_DEPLOYMENT_TARGET = "14.4"
+
+[target.'cfg(target_os = "macos")']
+runner = ["bash", "scripts/cargo-run.sh"]
