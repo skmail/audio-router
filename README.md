@@ -8,6 +8,8 @@ Send each Mac app's audio to the output you want.
 
 Play **Brave through your Mac speakers** and **Chrome through your headphones** at the same time. Audio Router lives in your menu bar.
 
+![Audio Router menu showing available audio outputs](docs/images/menu.png)
+
 ## Run
 
 You need **macOS 14.4 or newer**, [Rust](https://rustup.rs/), and Apple's command-line tools. You don't need to open Xcode or install an audio driver.
